@@ -36,16 +36,27 @@ function arcPoints(a, b, n = 64) { // great-circle interpolation
   return pts;
 }
 
+/* ---------- cache + network ---------- */
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem('fc:' + k)); } catch (_) { return null; } },
+  set(k, v) { try { localStorage.setItem('fc:' + k, JSON.stringify(v)); } catch (_) {} }
+};
+async function http(url, opt = {}, ms = 25000) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
+  if (opt.signal) opt.signal.addEventListener('abort', () => ctl.abort());
+  try { return await fetch(url, { ...opt, signal: ctl.signal }); } finally { clearTimeout(t); }
+}
+
 /* ---------- APIs ---------- */
 async function geocode(city) {
-  const r = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1`,
-    { headers: { 'Accept': 'application/json' } });
+  const r = await http(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1`, { headers: { Accept: 'application/json' } }, 12000);
   if (!r.ok) throw new Error('The geocoder is unavailable. Try again shortly.');
   const j = await r.json();
   if (!j.length) throw new Error(`No place found for "${city}". Check the spelling or add a country.`);
   return { lat: +j[0].lat, lon: +j[0].lon, display: j[0].display_name };
 }
-async function ghostSites(c, radiusKm) {
+// P31/P279? (one subclass hop) is far cheaper for Wikidata than the full P279* tree walk
+async function ghostSites(c, radiusKm, signal, retry = true) {
   const q = `SELECT ?item ?itemLabel ?coord ?wikiTitle ?dist WHERE {
   SERVICE wikibase:around {
     ?item wdt:P625 ?coord .
@@ -54,35 +65,42 @@ async function ghostSites(c, radiusKm) {
     bd:serviceParam wikibase:distance ?dist .
   }
   VALUES ?class { wd:Q74047 wd:Q839954 }
-  ?item wdt:P31/wdt:P279* ?class .
+  ?item wdt:P31/wdt:P279? ?class .
   ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wikiTitle .
   SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
 } ORDER BY ?dist LIMIT 3`;
-  const r = await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(q)}`,
-    { headers: { 'Accept': 'application/sparql-results+json' } });
-  if (!r.ok) throw new Error('The archive (Wikidata) is busy. Try again in a moment.');
-  const j = await r.json();
-  return j.results.bindings.map(b => {
-    const m = /Point\(([-\d.eE]+) ([-\d.eE]+)\)/.exec(b.coord.value);
-    return { name: b.itemLabel.value, lon: +m[1], lat: +m[2], title: b.wikiTitle.value };
-  }).filter(s => !/^Q\d+$/.test(s.name));
+  try {
+    const r = await http(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(q)}`, { headers: { Accept: 'application/sparql-results+json' }, signal });
+    if (!r.ok) throw new Error('busy');
+    const j = await r.json();
+    return j.results.bindings.map(b => {
+      const m = /Point\(([-\d.eE]+) ([-\d.eE]+)\)/.exec(b.coord.value);
+      return { name: b.itemLabel.value, lon: +m[1], lat: +m[2], title: b.wikiTitle.value };
+    }).filter(s => !/^Q\d+$/.test(s.name));
+  } catch (e) {
+    if (signal && signal.aborted) throw e;
+    if (retry) { await new Promise(r => setTimeout(r, 800)); return ghostSites(c, radiusKm, signal, false); }
+    throw new Error('The archive (Wikidata) is busy. Try again in a moment.');
+  }
 }
-async function summary(title) {
-  const r = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`);
+// first 10 sentences of the article (not just the one-line intro), plus photo and link, in one request
+async function page(title) {
+  const u = 'https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&redirects=1&prop=extracts|pageimages|info&exsentences=10&explaintext=1&exsectionformat=plain&piprop=thumbnail&pithumbsize=900&inprop=url&titles=' + encodeURIComponent(title);
+  const r = await http(u, {}, 12000);
   if (!r.ok) return null;
-  const j = await r.json();
-  return { text: j.extract || '', thumb: j.thumbnail && j.thumbnail.source, url: j.content_urls && j.content_urls.desktop.page };
+  const p = Object.values((await r.json()).query.pages)[0];
+  const paras = (p.extract || '').split(/\n+/).map(s => s.trim()).filter(s => s.length > 60 || /[.!?]$/.test(s));
+  return { paras, thumb: p.thumbnail && p.thumbnail.source, url: p.fullurl };
 }
 
 /* ---------- UI ---------- */
-function setStatus(msg, err) { const s = $('status'); s.textContent = msg; s.className = 'status' + (err ? ' err' : ''); }
+function setStatus(msg, err, busy) { const s = $('status'); s.textContent = msg; s.className = 'status' + (err ? ' err' : '') + (busy ? ' busy' : ''); }
 function shortName(d) { return d.split(',')[0].trim(); }
 
 function draw(city, site) {
   if (!map) {
     map = L.map('map', { worldCopyJump: true });
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 19 }).addTo(map);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors', maxZoom: 18, className: 'dark-tiles' }).addTo(map);
   }
   if (layer) layer.remove();
   layer = L.layerGroup().addTo(map);
@@ -99,43 +117,61 @@ function draw(city, site) {
 function show(city, site, info) {
   const km = haversine(city, site), mi = km * 0.621371, dir = compass(bearing(city, site));
   const cityName = shortName(city.display);
-  const dist = km < 10 ? km.toFixed(1) : Math.round(km);
+  const f = n => n < 10 ? n.toFixed(1) : Math.round(n).toLocaleString();
   current = { cityName, name: site.name, distance: `${Math.round(km)} km / ${Math.round(mi)} mi`, coords: fmtCoord(site) };
   $('name').textContent = site.name;
   $('coords').textContent = fmtCoord(site);
-  $('badge').textContent = `[ ${dist} km (${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi) ${dir} of ${cityName} ]`;
-  $('story').textContent = info.text || 'No written record survives in the archive for this site.';
+  $('dist').textContent = `${f(km)} km (${f(mi)} mi)`;
+  $('dir').textContent = `${dir} of ${cityName}`;
+  const st = $('story'); st.textContent = '';
+  const paras = info.paras && info.paras.length ? info.paras : ['No written record survives in the archive for this site.'];
+  paras.forEach(t => { const p = document.createElement('p'); p.textContent = t; st.appendChild(p); });
   const ph = $('photo');
   if (info.thumb) { $('img').src = info.thumb; $('img').alt = `Archival view of ${site.name}`; $('cap').textContent = site.name; ph.hidden = false; } else ph.hidden = true;
-  const w = $('wiki'); w.href = info.url || `https://en.wikipedia.org/wiki/${encodeURIComponent(site.title.replace(/ /g, '_'))}`;
+  $('wiki').href = info.url || `https://en.wikipedia.org/wiki/${encodeURIComponent(site.title.replace(/ /g, '_'))}`;
   draw(city, site);
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-$('form').addEventListener('submit', async e => {
-  e.preventDefault();
-  const q = $('city').value.trim(); if (!q) return;
+async function run(q) {
   const btn = $('go'); btn.disabled = true;
+  const key = q.toLowerCase(), hit = store.get(key);
   try {
-    setStatus('Locating the city…');
+    if (hit && Date.now() - hit.t < 6048e5) { show(hit.city, hit.site, hit.info); setStatus(''); return; }
+    setStatus('Locating the city…', false, true);
     const city = await geocode(q);
-    setStatus('Searching the archives for the nearest ghost…');
-    let sites = await ghostSites(city, 500);
-    if (!sites.length) { setStatus('Nothing within 500 km. Widening the search…'); sites = await ghostSites(city, 2000); }
+    setStatus('Searching the archives for the nearest ghost…', false, true);
+    const c2 = new AbortController();
+    const near = ghostSites(city, 500), far = ghostSites(city, 2000, c2.signal).catch(() => []); // run both at once
+    let sites = await near;
+    if (sites.length) c2.abort(); else { setStatus('Nothing within 500 km. Widening the search…', false, true); sites = await far; }
     if (!sites.length) throw new Error('No ghost twin found nearby. Try a different city.');
-    let pick = null, info = null;
-    for (const s of sites) { // nearest first; fall back if no historical notes
-      const i = await summary(s.title);
-      if (i && i.text.length > 60) { pick = s; info = i; break; }
-      if (!pick && i) { pick = s; info = i; }
-    }
-    if (!pick) { pick = sites[0]; info = { text: '' }; }
-    show(city, pick, info);
+    setStatus('Reading the historical record…', false, true);
+    const infos = await Promise.all(sites.map(s => page(s.title).catch(() => null)));
+    let k = infos.findIndex(i => i && i.paras.join(' ').length > 120);
+    if (k < 0) k = infos.findIndex(Boolean);
+    if (k < 0) k = 0;
+    const site = sites[k], info = infos[k] || { paras: [] };
+    store.set(key, { t: Date.now(), city, site, info });
+    show(city, site, info);
     setStatus('');
   } catch (err) {
     setStatus(err.message || 'Something went wrong. Check your connection and retry.', true);
   } finally { btn.disabled = false; }
-});
+}
+$('form').addEventListener('submit', e => { e.preventDefault(); const q = $('city').value.trim(); if (q) run(q); });
+document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => { $('city').value = c.textContent; run(c.textContent); }));
+$('copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(current.coords); $('copy').textContent = 'Copied'; setTimeout(() => $('copy').textContent = 'Copy', 1500); } catch (_) {} });
+
+/* ---------- tabs ---------- */
+function tab(n) {
+  document.querySelectorAll('.view').forEach(v => v.hidden = v.id !== n);
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === n));
+  if (n === 'explore' && map) setTimeout(() => map.invalidateSize(), 60);
+  scrollTo(0, 0); history.replaceState(null, '', '#' + n);
+}
+document.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', e => { e.preventDefault(); tab(b.dataset.tab); }));
+if (location.hash === '#about') tab('about');
 
 /* ---------- share ---------- */
 $('share').addEventListener('click', async () => {

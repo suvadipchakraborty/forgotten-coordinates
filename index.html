@@ -21,41 +21,80 @@
 <meta name="twitter:description" content="Type any city and meet the nearest abandoned settlement, lost colony or forgotten ruin.">
 <meta name="twitter:image" content="https://forgotten-coordinates.suvadipchakraborty.workers.dev/preview.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://nominatim.openstreetmap.org">
+<link rel="preconnect" href="https://query.wikidata.org">
+<link rel="preconnect" href="https://en.wikipedia.org">
+<link rel="preconnect" href="https://tile.openstreetmap.org">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Cormorant+Garamond:wght@500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div class="grain" aria-hidden="true"></div>
-<header class="masthead">
-  <h1>Forgotten Coordinates</h1>
-  <p class="tag">Every modern city has a ghost twin. Name yours.</p>
-  <form id="form" class="finder" autocomplete="off">
-    <label for="city" class="sr">City</label>
-    <input id="city" type="text" placeholder="Berlin, Lagos, Osaka…" required>
-    <button type="submit" id="go">Find my ghost twin</button>
-  </form>
+<nav class="nav">
+  <a class="brand" href="#explore" data-tab="explore"><svg class="logo" width="22" height="22" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" aria-hidden="true"><circle cx="50" cy="50" r="30"/><path d="M50 8v84M8 50h84" stroke-width="4"/></svg><span>Forgotten Coordinates</span></a>
+  <div class="tabs"><button class="tab on" data-tab="explore" type="button">Explore</button><button class="tab" data-tab="about" type="button">About</button></div>
+</nav>
+
+<section id="explore" class="view">
+  <header class="hero">
+    <h1>Forgotten Coordinates</h1>
+    <p class="tag">Every modern city has a ghost twin. Name yours.</p>
+    <form id="form" class="finder" autocomplete="off">
+      <label for="city" class="sr">City</label>
+      <input id="city" type="text" placeholder="Berlin, Lagos, Osaka…" required>
+      <button type="submit" id="go">Find my ghost twin</button>
+    </form>
+    <p class="chips">Try <button type="button" class="chip">Mumbai</button><button type="button" class="chip">Berlin</button><button type="button" class="chip">Mexico City</button><button type="button" class="chip">Cairo</button></p>
+  </header>
+  <main>
+    <p id="status" class="status" role="status" aria-live="polite">Enter a city to begin the search.</p>
+    <section id="result" class="result" hidden>
+      <article class="card">
+        <figure id="photo" class="photo" hidden><img id="img" alt=""><figcaption id="cap"></figcaption></figure>
+        <h2 id="name"></h2>
+        <dl class="stats">
+          <div><dt>Distance</dt><dd id="dist"></dd></div>
+          <div><dt>Direction</dt><dd id="dir"></dd></div>
+          <div class="wide"><dt>Coordinates</dt><dd><span id="coords"></span> <button id="copy" class="mini" type="button">Copy</button></dd></div>
+        </dl>
+        <h3>Historical dossier</h3>
+        <div id="story" class="story"></div>
+        <div class="actions">
+          <button id="share" type="button">Share this find</button>
+          <a id="wiki" target="_blank" rel="noopener">Read the full record</a>
+        </div>
+      </article>
+      <div id="map" aria-label="Map of the city and its ghost twin"></div>
+    </section>
+  </main>
   <button id="install" class="ghost-btn" type="button">Install app</button>
-</header>
-<main>
-  <p id="status" class="status" role="status" aria-live="polite">Enter a city to begin the search.</p>
-  <section id="result" class="result" hidden>
-    <div id="map" aria-label="Map of the city and its ghost twin"></div>
-    <article class="card">
-      <figure id="photo" class="photo" hidden><img id="img" alt=""><figcaption id="cap"></figcaption></figure>
-      <h2 id="name"></h2>
-      <p id="coords" class="coords"></p>
-      <p id="badge" class="badge"></p>
-      <h3>Historical dossier</h3>
-      <p id="story" class="story"></p>
-      <div class="actions">
-        <button id="share" type="button">Share this find</button>
-        <a id="wiki" target="_blank" rel="noopener">Read the full record</a>
-      </div>
-    </article>
-  </section>
-</main>
+</section>
+
+<section id="about" class="view" hidden>
+  <div class="about">
+    <h1>About Forgotten Coordinates</h1>
+    <p class="lead">A small atlas of places people left behind, matched to the cities people live in today.</p>
+    <h2>Purpose</h2>
+    <p>Most of us know our own city well and know almost nothing about the abandoned towns, lost colonies and ruined sites sitting a few hours away. Forgotten Coordinates pairs the two. Name a city and you get its ghost twin: the nearest abandoned settlement or archaeological ruin, with exact coordinates, distance, direction and a written history.</p>
+    <h2>How it works</h2>
+    <ol>
+      <li>Your city name is turned into coordinates.</li>
+      <li>The Wikidata archive is searched for abandoned settlements and archaeological sites within 500 km, widening to 2,000 km if nothing is found.</li>
+      <li>The nearest site with a written record is picked and its history is fetched from Wikipedia.</li>
+      <li>The distance and bearing are calculated along the great circle (the shortest path over the globe) and drawn on the map.</li>
+    </ol>
+    <h2>What counts as a ghost twin</h2>
+    <p>Ghost towns, abandoned villages and archaeological sites that have a Wikipedia article. Places without a documented history are skipped, so the nearest twin on the map is not always the nearest ruin in reality.</p>
+    <h2>Data and credits</h2>
+    <p>Place search by Nominatim, sites from Wikidata, text and photos from Wikipedia (their licences apply), map tiles and data by OpenStreetMap contributors. The app has no accounts, no tracking and stores only your recent searches in your own browser to load them faster.</p>
+    <h2>Good to know</h2>
+    <p>The dossier is the opening of the Wikipedia article, so quality varies by site. Search results come from public services and can be slow at busy times. Repeat searches load instantly.</p>
+    <p><a class="cta" href="#explore" data-tab="explore">Find your ghost twin</a></p>
+  </div>
+</section>
+
 <footer>
   <span>Built by Suva</span>
   <a class="fb" href="mailto:suvadipchakraborty@gmail.com?subject=Forgotten%20Coordinates%20Feedback" aria-label="Send feedback" title="Send feedback">
